@@ -160,37 +160,37 @@ class KarelExecutor(CompiledExecutor):
     def parse_feedback_from_stderr(self, stderr: bytes, process: TracedPopen) -> str:
         exception = 'Error de juez (Error desconocido)'
         if process.returncode == 2:
-            exception = "Error de juez (El administrador del juez debe revisar la versión de la VM)"
+            exception = "Error de juez (Versión de la VM incorrecta)"
         elif process.returncode == 16:
             exception = "Error de ejecución (Karel chocó con un muro)"
         elif process.returncode == 17:
-            exception = "Error de ejecución (Karel intentó recoger un zumbador de una posición vacía)"
+            exception = "Error de ejecución (Posición sin zumbadores)"
         elif process.returncode == 18:
-            exception = "Error de ejecución (Karel intentó dejar un zumbador con su mochila vacía)"
+            exception = "Error de ejecución (Mochila vacía sin zumbadores)"
         elif process.returncode == 19:
-            exception = "Error de ejecución (La pila de llamadas se desbordó)"
+            exception = "Error de ejecución (Pila de llamadas desbordada)"
         elif process.returncode == 20:
-            exception = "Límite de memoria (Se excedió la memoria de la pila de llamadas)"
+            exception = "Límite de memoria (Memoria de la pila llena)"
         elif process.returncode == 21:
-            exception = "Error de ejecución (Se excedió la cantidad de parámetros permitidos en una llamada)"
+            exception = "Error de ejecución (Demasiados parametros)"
         elif process.returncode == 22:
-            exception = "Error de ejecución (Un número excedió el límite superior)"
+            exception = "Error de ejecución (Número demasiado grande)"
         elif process.returncode == 23:
-            exception = "Error de ejecución (Un número excedió el límite inferior)"
+            exception = "Error de ejecución (Número demasiado pequeño)"
         elif process.returncode == 24:
-            exception = "Error de ejecución (Un montón excedió el límite superior)"
+            exception = "Error de ejecución (Montón demasiado grande)"
         elif process.returncode == 25:
-            exception = "Error de ejecución (Se excedió el límite superior de la mochila)"
+            exception = "Error de ejecución (Mochila desbordada)"
         elif process.returncode == 48:
-            exception = "Límite de instrucciones excedido (Demasiadas en general)"
+            exception = "Límite de instrucciones excedido (General)"
         elif process.returncode == 49:
-            exception = "Límite de instrucciones excedido (Demasiadas izquierdas)"
+            exception = "Límite de instrucciones excedido (Izquierdas)"
         elif process.returncode == 50:
-            exception = "Límite de instrucciones excedido (Demasiados avanzas)"
+            exception = "Límite de instrucciones excedido (Avanzas)"
         elif process.returncode == 51:
-            exception = "Límite de instrucciones excedido (Demasiados coge-zumbadores)"
+            exception = "Límite de instrucciones excedido (Coge-zumbadores)"
         elif process.returncode == 52:
-            exception = "Límite de instrucciones excedido (Demasiados deja-zumbadores)"
+            exception = "Límite de instrucciones excedido (Deja-zumbadores)"
 
         return exception
 
