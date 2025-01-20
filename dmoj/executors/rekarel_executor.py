@@ -6,12 +6,12 @@ import subprocess
 import sys
 from collections import deque
 from pathlib import Path, PurePath
-from typing import Any, Dict, List, Optional, Tuple, Type
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
 from dmoj.cptbox import Debugger, TracedPopen
 from dmoj.cptbox.filesystem_policies import ExactDir, ExactFile, FilesystemAccessRule, RecursiveDir
 from dmoj.error import CompileError, InternalError
-from dmoj.executors.base_executor import AutoConfigOutput, VersionFlags
+from dmoj.executors.base_executor import AutoConfigOutput, VersionFlags, print_ansi
 from dmoj.executors.compiled_executor import CompiledExecutor
 from dmoj.executors.mixins import SingleDigitVersionMixin
 from dmoj.judgeenv import skip_self_test
@@ -58,6 +58,46 @@ class KarelExecutor(CompiledExecutor):
     vm: str
     compiler: str
     # nproc = -1
+
+    # This syscalls are needed by Node
+    compiler_syscalls = [
+        'capget',
+        'eventfd2',
+        'shutdown',
+        'pkey_alloc',
+        'pkey_free',
+    ]
+    # Node needs to access this files
+    compiler_read_fs: List[FilesystemAccessRule] = [
+        ExactFile('/usr/lib/ssl/openssl.cnf'),
+    ]
+
+    #This is due to the script-like compiler
+    def get_compiler_read_fs(self) -> List[FilesystemAccessRule]:
+        fs = self.get_fs() + self.compiler_read_fs
+        compiler = self.get_compiler()
+        fs += [ExactFile(compiler)]
+        compiler_dir = os.path.dirname(os.path.realpath(compiler))
+        nodejs_bin = Path(compiler).parent
+
+        nodjes_lib = Path(compiler_dir).parent.parent
+        # Give access to full node/bin
+        fs += [RecursiveDir(nodejs_bin)]
+        # Give full access to node/lib
+        fs += [RecursiveDir(nodjes_lib)]
+
+        # FIXME For some reason, Node touches all paths from /home to the js file!
+        def iterate(path, fs):
+            current = path
+            while current != os.path.dirname(current):  # Stop at one level before the root
+                fs += [ExactDir(current)]  # Print or process the current directory
+                current = os.path.dirname(current)
+        iterate(
+            compiler_dir, 
+            fs
+        )
+        return fs
+    
     # fsize = 1048576  # Allow 1 MB for writing crash log.
     # address_grace = 786432
 
@@ -70,8 +110,8 @@ class KarelExecutor(CompiledExecutor):
     # def get_compile_popen_kwargs(self) -> Dict[str, Any]:
     #     return {'executable': utf8bytes(self.get_compiler())}
 
-    def get_compiled_file(self) -> str:
-        return ''
+    # def get_compiled_file(self) -> str:
+    #     return ''
 
     def get_executable(self) -> str:
         vm = self.get_vm()
@@ -188,74 +228,94 @@ class KarelExecutor(CompiledExecutor):
         assert compiler is not None
         assert self._code is not None
         # TODO: Maybe it needs an output file
-        return [compiler, 'compile', self._code]
-    # @classmethod
-    # def autoconfig(cls) -> AutoConfigOutput:
-    #     if cls.jvm_regex is None:
-    #         return {}, False, 'Unimplemented', ''
+        return [
+            compiler, 
+            'compile', 
+            os.path.realpath(self._code),
+            '-o',
+            self.get_compiled_file()
+        ]
+    
+    def get_cmdline(self, **kwargs):
+        return [
+            self.get_vm(),
+            self.problem
+        ]
+    
+    # This is mostly the same as base_executor.run_self_test, but instead of checking echolalia, it tests for karel worlds
+    @classmethod
+    def run_self_test(cls, output: bool = True, error_callback: Optional[Callable[[Any], Any]] = None) -> bool:
+        if not cls.test_program:
+            return True
 
-    #     JVM_DIR = '/usr/local' if sys.platform.startswith('freebsd') else '/usr/lib/jvm'
-    #     regex = re.compile(cls.jvm_regex)
+        if output:
+            print_ansi(f'Self-testing #ansi[{cls.get_executor_name()}](|underline):'.ljust(39), end=' ')
+        try:
+            executor = cls(cls.test_name, utf8bytes(cls.test_program))
+            proc = executor.launch(
+                time=cls.test_time, memory=cls.test_memory, stdin=subprocess.PIPE, stdout=subprocess.PIPE
+            )
+            # Instead of checking for a program with Echolalia, check actual karel worlds
+            test_message = b'<ejecucion version="1.1"><condiciones instruccionesMaximasAEjecutar="10000000" longitudStack="65000" memoriaStack="65000" llamadaMaxima="5"/><mundos><mundo nombre="mundo_0" ancho="100" alto="100"/></mundos><programas tipoEjecucion="CONTINUA" intruccionesCambioContexto="1" milisegundosParaPasoAutomatico="0"><programa nombre="p1" ruta="{$2$}" mundoDeEjecucion="mundo_0" xKarel="1" yKarel="1" direccionKarel="NORTE" mochilaKarel="0"/></programas></ejecucion>'
+            expected_output = (b"""<resultados>
+	<programas>
+		<programa nombre="p1" resultadoEjecucion="FIN PROGRAMA"/>
+	</programas>
+</resultados>
+"""
+            )
+            stdout, stderr = proc.communicate(test_message + b'\n')
 
-    #     try:
-    #         vms = os.listdir(JVM_DIR)
-    #     except OSError:
-    #         vms = []
+            if proc.is_tle:
+                print_ansi('#ansi[Time Limit Exceeded](red|bold)')
+                return False
+            if proc.is_mle:
+                print_ansi('#ansi[Memory Limit Exceeded](red|bold)')
+                return False
 
-    #     for item in vms:
-    #         path = os.path.join(JVM_DIR, item)
-    #         if not os.path.isdir(path) or os.path.islink(path):
-    #             continue
+            res = stdout.strip() == expected_output.strip() and not stderr
+            if output:
+                # Cache the versions now, so that the handshake packet doesn't take ages to generate
+                cls.get_runtime_versions()
+                usage = f'[{proc.execution_time:.3f}s, {proc.max_memory} KB]'
+                print_ansi(f'{["#ansi[Failed](red|bold) ", "#ansi[Success](green|bold)"][res]} {usage:<19}', end=' ')
+                print_ansi(
+                    ', '.join(
+                        [
+                            f'#ansi[{runtime}](cyan|bold) {".".join(map(str, version))}'
+                            for runtime, version in cls.get_runtime_versions()
+                        ]
+                    )
+                )
+            if stdout.strip() != test_message.strip() and error_callback:
+                error_callback('Got unexpected stdout output:\n' + utf8text(stdout))
+            if stderr:
+                if error_callback:
+                    error_callback('Got unexpected stderr output:\n' + utf8text(stderr))
+                else:
+                    print(stderr, file=sys.stderr)
+            if proc.protection_fault:
+                print_protection_fault(proc.protection_fault)
+            return res
+        except Exception:
+            if output:
+                print_ansi('#ansi[Failed](red|bold)')
+                traceback.print_exc()
+            if error_callback:
+                error_callback(traceback.format_exc())
+            return False
 
-    #         if regex.match(item):
-    #             try:
-    #                 config, success, message = cls.test_jvm(item, path)
-    #             except (NotImplementedError, TypeError, ValueError):
-    #                 return {}, False, 'Unimplemented', ''
-    #             else:
-    #                 if success:
-    #                     return config, success, message, ''
-    #     return {}, False, 'Could not find JVM', ''
 
-    # @classmethod
-    # def unravel_java(cls, path: str) -> str:
-    #     with open(path, 'rb') as f:
-    #         if f.read(2) != '#!':
-    #             return os.path.realpath(path)
-
-    #     with open(os.devnull, 'w') as devnull:
-    #         process = subprocess.Popen(['bash', '-x', path, '-version'], stdout=devnull, stderr=subprocess.PIPE)
-
-    #     log = [i for i in process.communicate()[1].split(b'\n') if b'exec' in i]
-    #     cmdline = log[-1].lstrip(b'+ ').split()
-    #     return utf8text(cmdline[1]) if len(cmdline) > 1 else os.path.realpath(path)
-
-
-# class JavacExecutor(KarelExecutor):
-    # def create_files(self, problem_id: str, source_code: bytes, *args, **kwargs) -> None:
-    #     super().create_files(problem_id, source_code, *args, **kwargs)
-    #     # This step is necessary because of Unicode classnames
-    #     try:
-    #         source = utf8text(source_code)
-    #     except UnicodeDecodeError:
-    #         raise CompileError('Your UTF-8 is bad, and you should feel bad')
-    #     class_name = find_class(source)
-    #     self._code = self._file(f'{class_name}.java')
-    #     try:
-    #         with open(self._code, 'wb') as fo:
-    #             fo.write(utf8bytes(source))
-    #     except IOError as e:
-    #         if e.errno in (errno.ENAMETOOLONG, errno.ENOENT, errno.EINVAL):
-    #             raise CompileError('Why do you need a class name so long? As a judge, I sentence your code to death.\n')
-    #         raise
-    #     self._class_name = class_name
+    
+    def get_compile_popen_kwargs(self) -> Dict[str, Any]:
+        return {'executable': utf8bytes(self.get_compiler())}
 
     def get_compile_args(self) -> List[str]:
         compiler = self.get_compiler()
         assert compiler is not None
         assert self._code is not None
         # TODO: Maybe it needs an output file
-        return [compiler, 'compile', self._code]
+        return [compiler, 'compile', self._code, '-o', self.get_compiled_file()]
 
     def handle_compile_error(self, output: bytes):
         if b'is public, should be declared in a file named' in utf8bytes(output):
@@ -263,30 +323,9 @@ class KarelExecutor(CompiledExecutor):
         raise CompileError(output)
 
     @classmethod
-    def test_jvm(cls, name: str, path: str) -> Tuple[Dict[str, Any], bool, str]:
-        vm_path = os.path.join(path, 'bin', 'java')
-        compiler_path = os.path.join(path, 'bin', 'javac')
+    def get_find_first_mapping(cls) -> Optional[Dict[str, List[str]]]:
+        return {
+            "rekarel": ["rekarel"],
+            "karel": ["karel"]
+        }
 
-        if os.path.isfile(vm_path) and os.path.isfile(compiler_path):
-            # Not all JVMs have the same VMs available; specifically,
-            # OpenJDK for ARM has no client VM, but has dcevm+server. So, we test
-            # a bunch and if it's not the default (-client), then we list it
-            # in the config.
-            vm_modes = ['client', 'server', 'dcevm', 'zero']
-            cls_vm_mode = cls.vm + '_mode'
-            result = {}
-            for mode in vm_modes:
-                result = {cls.vm: vm_path, cls_vm_mode: mode, cls.compiler: compiler_path}
-
-                executor: Type[JavacExecutor] = type('Executor', (cls,), {'runtime_dict': result})
-                success = executor.run_self_test(output=False)
-                if success:
-                    # Don't pollute the YAML in the usual case where it's -client
-                    if mode == 'client':
-                        del result[cls_vm_mode]
-                    return result, success, f'Using {vm_path} ({mode} VM)'
-            else:
-                # If absolutely no VM mode works, then we've failed the self test
-                return result, False, 'Failed self-test'
-        else:
-            return {}, False, 'Invalid JDK'
