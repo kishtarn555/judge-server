@@ -98,6 +98,14 @@ class KarelExecutor(CompiledExecutor):
         )
         return fs
     
+    def get_compile_env(self):
+        env = os.environ.copy()
+        if env is None:
+            env = {}
+        # Disable io_uring due to potential security implications
+        env['UV_USE_IO_URING'] = '0'
+        return env
+    
     # fsize = 1048576  # Allow 1 MB for writing crash log.
     # address_grace = 786432
 
